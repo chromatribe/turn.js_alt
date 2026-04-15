@@ -4,6 +4,16 @@ Github: https://github.com/blasten/turn.js
 Reference: https://github.com/blasten/turn.js/wiki/Reference
 Website: www.turnjs.com 
 ------------------------------------------------------
+2026 refresh (this fork)
+------------------------------------------------------
+
+- Per-instance corner maps (no global mutation when multiple books exist)
+- Touch: passive listener registration so preventDefault works on touchmove; pointer normalization
+- Safer vendor prefix detection when document.body is not ready
+- turn('destroy') to remove document listeners and data
+- Default option elevation documented; demos use jQuery 3.7 over HTTPS
+
+------------------------------------------------------
 Release 3 - 2012/03/01
 ------------------------------------------------------
 

@@ -29,17 +29,22 @@ var has3d,
 
 	A90 = PI/2,
 
-	isTouch = 'ontouchstart' in window,
+	// Prefer coarse pointer + maxTouchPoints so desktop with touch screen is detected; exclude pen-only primary pointer
+	isTouch = (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) ||
+		(typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0) ||
+		'ontouchstart' in window,
 
 	events = (isTouch) ? {start: 'touchstart', move: 'touchmove', end: 'touchend'}
 			: {start: 'mousedown', move: 'mousemove', end: 'mouseup'},
+
+	turnUid = 0,
 
 	// Contansts used for each corner
 	// tl * tr
 	// *     *
 	// bl * br
 
-	corners = {
+	cornerSets = {
 		backward: ['bl', 'tl'],
 		forward: ['br', 'tr'],
 		all: ['tl', 'bl', 'tr', 'br']
@@ -73,7 +78,11 @@ var has3d,
 
 		// Events
 
-		when: null
+		when: null,
+
+		// Page lift for turn animation (used by flip)
+
+		elevation: 0
 	},
 
 	flipOptions = {
@@ -173,59 +182,95 @@ var has3d,
 		return Object.prototype.hasOwnProperty.call(object, property);
 	},
 
-	// Gets the CSS3 vendor prefix
+	// Gets the CSS3 vendor prefix (works before body exists; unprefixed first)
 
 	getPrefix = function() {
-		var vendorPrefixes = ['Moz','Webkit','Khtml','O','ms'],
-			len = vendorPrefixes.length,
-			vendor = '';
+		var el = document.documentElement && document.documentElement.style,
+			body = document.body && document.body.style,
+			style = el || body,
+			vendorPrefixes = ['webkit','moz','ms','o'],
+			i,
+			candidate;
 
-		while (len--)
-			if ((vendorPrefixes[len] + 'Transform') in document.body.style)
-				vendor='-'+vendorPrefixes[len].toLowerCase()+'-';
+		if (!style) return '';
 
-		return vendor;
+		if ('transform' in style) return '';
+
+		for (i = 0; i < vendorPrefixes.length; i++) {
+			candidate = vendorPrefixes[i] + 'Transform';
+			if (candidate in style)
+				return '-' + vendorPrefixes[i] + '-';
+		}
+
+		return '';
+	},
+
+	// Normalized pointer position (mouse, touch, or passive-touch friendly)
+
+	getPointerFromEvent = function(e) {
+		var oe;
+		if (!e) return null;
+		oe = e.originalEvent || e;
+		if (oe.touches && oe.touches.length) return oe.touches[0];
+		if (oe.changedTouches && oe.changedTouches.length) return oe.changedTouches[0];
+		if (typeof e.pageX === 'number' && typeof e.pageY === 'number') return e;
+		return null;
+	},
+
+	// Registers document-level listeners with { passive: false } when needed (avoids blocked touchmove)
+
+	installPassiveTouchListeners = function($el, ns, handlers) {
+		var opts = {passive: false};
+		if (!window.addEventListener) {
+			$(document).on(events.move + ns, handlers.move).on(events.end + ns, handlers.end);
+			return;
+		}
+		document.addEventListener(events.move, handlers.move, opts);
+		document.addEventListener(events.end, handlers.end, opts);
+		document.addEventListener('touchcancel', handlers.end, opts);
+		$el.data('turnjsPassiveTouch', {handlers: handlers, opts: opts});
+	},
+
+	removePassiveTouchListeners = function($el) {
+		var pack = $el.data('turnjsPassiveTouch'), h, o;
+		if (!pack || !window.removeEventListener) return;
+		h = pack.handlers;
+		o = pack.opts;
+		document.removeEventListener(events.move, h.move, o);
+		document.removeEventListener(events.end, h.end, o);
+		document.removeEventListener('touchcancel', h.end, o);
+		$el.removeData('turnjsPassiveTouch');
 	},
 
 	// Adds gradients
 
 	gradient = function(obj, p0, p1, colors, numColors) {
-	
-		var j, cols = [];
 
-		if (vendor=='-webkit-') {
-		
-			for (j = 0; j<numColors; j++)
-					cols.push('color-stop('+colors[j][0]+', '+colors[j][1]+')');
-			
-			obj.css({'background-image': '-webkit-gradient(linear, '+p0.x+'% '+p0.y+'%,  '+p1.x+'% '+p1.y+'%, '+ cols.join(',') +' )'});
+		var j,
+			cols = [],
+			w = obj.width(),
+			h = obj.height(),
+			p0x = p0.x / 100 * w,
+			p0y = p0.y / 100 * h,
+			p1x = p1.x / 100 * w,
+			p1y = p1.y / 100 * h,
+			dx = p1x - p0x,
+			dy = p1y - p0y,
+			angle = Math.atan2(dy, dx),
+			angle2 = angle - Math.PI / 2,
+			diagonal = Math.abs(w * Math.sin(angle2)) + Math.abs(h * Math.cos(angle2)),
+			gradientDiagonal = Math.sqrt(dx * dx + dy * dy),
+			corner = point2D((p1x < p0x) ? w : 0, (p1y < p0y) ? h : 0),
+			slope = Math.tan(angle),
+			inverse = -1 / slope,
+			x = (inverse * corner.x - corner.y - slope * p0x + p0y) / (inverse - slope),
+			c = {x: x, y: inverse * x - inverse * corner.x + corner.y},
+			segA = Math.sqrt(Math.pow(c.x - p0x, 2) + Math.pow(c.y - p0y, 2));
 
-		} else {
+		for (j = 0; j < numColors; j++)
+			cols.push(colors[j][1] + ' ' + ((segA + gradientDiagonal * colors[j][0]) * 100 / diagonal) + '%');
 
-			// This procedure makes the gradients for non-webkit browsers
-			// It will be reduced to one unique way for gradients in next versions
-			
-			p0 = {x:p0.x/100 * obj.width(), y:p0.y/100 * obj.height()};
-			p1 = {x:p1.x/100 * obj.width(), y:p1.y/100 * obj.height()};
-
-			var dx = p1.x-p0.x,
-				dy = p1.y-p0.y,
-				angle = Math.atan2(dy, dx),
-				angle2 = angle - Math.PI/2,
-				diagonal = Math.abs(obj.width()*Math.sin(angle2)) + Math.abs(obj.height()*Math.cos(angle2)),
-				gradientDiagonal = Math.sqrt(dy*dy + dx*dx),
-				corner = point2D((p1.x<p0.x) ? obj.width() : 0, (p1.y<p0.y) ? obj.height() : 0),
-				slope = Math.tan(angle),
-				inverse = -1/slope,
-				x = (inverse*corner.x - corner.y - slope*p0.x + p0.y) / (inverse-slope),
-				c = {x: x, y: inverse*x - inverse*corner.x + corner.y},
-				segA = (Math.sqrt( Math.pow(c.x-p0.x,2) + Math.pow(c.y-p0.y,2)));
-
-				for (j = 0; j<numColors; j++)
-					cols.push(' '+colors[j][1]+' '+(( segA + gradientDiagonal*colors[j][0] )*100/diagonal)+'%');
-		
-				obj.css({'background-image': vendor+'linear-gradient(' + (-angle) + 'rad,' + cols.join(',') + ')'});
-		}
+		obj.css({'background-image': 'linear-gradient(' + (-angle) + 'rad,' + cols.join(',') + ')'});
 	},
 
 turnMethods = {
@@ -237,11 +282,11 @@ turnMethods = {
 
 		// Define constants
 		if (has3d===undefined) {
-			has3d = 'WebKitCSSMatrix' in window || 'MozPerspective' in document.body.style;
+			has3d = 'WebKitCSSMatrix' in window || !!(document.body && 'MozPerspective' in document.body.style);
 			vendor = getPrefix();
 		}
 
-		var i, data = this.data(), ch = this.children();
+		var i, data = this.data(), ch = this.children(), $root = $(this), ns = '.turnjs' + (++turnUid);
 	
 		opts = $.extend({width: this.width(), height: this.height()}, turnOptions, opts);
 		data.opts = opts;
@@ -251,11 +296,13 @@ turnMethods = {
 		data.pagePlace = {};
 		data.pageMv = [];
 		data.totalPages = opts.pages || 0;
+		data.corners = $.extend({}, cornerSets, opts.corners);
+		data.eventNs = ns;
 
 		if (opts.when)
 			for (i in opts.when)
 				if (has(i, opts.when))
-					this.bind(i, opts.when[i]);
+					this.on(i, opts.when[i]);
 
 
 		this.css({position: 'relative', width: opts.width, height: opts.height});
@@ -270,28 +317,29 @@ turnMethods = {
 	
 		this.turn('page', opts.page);
 
-        // allow setting active corners as an option
-        corners = $.extend({}, corners, opts.corners);
+		// Event listeners (namespaced for teardown; passive:false on touch move when supported)
 
-		// Event listeners
+		var docMove = function(e) {
+				for (var page in data.pages)
+					if (has(page, data.pages))
+						flipMethods._eventMove.call(data.pages[page], e);
+			},
+			docEnd = function(e) {
+				for (var page in data.pages)
+					if (has(page, data.pages))
+						flipMethods._eventEnd.call(data.pages[page], e);
+			};
 
-		$(this).bind(events.start, function(e) {
+		$root.on(events.start + ns, function(e) {
 			for (var page in data.pages)
 				if (has(page, data.pages) && flipMethods._eventStart.call(data.pages[page], e)===false)
 					return false;
 		});
-			
-		$(document).bind(events.move, function(e) {
-			for (var page in data.pages)
-				if (has(page, data.pages))
-					flipMethods._eventMove.call(data.pages[page], e);
-		}).
-		bind(events.end, function(e) {
-			for (var page in data.pages)
-				if (has(page, data.pages))
-					flipMethods._eventEnd.call(data.pages[page], e);
 
-		});
+		if (isTouch && window.addEventListener)
+			installPassiveTouchListeners($root, ns, {move: docMove, end: docEnd});
+		else
+			$(document).on(events.move + ns, docMove).on(events.end + ns, docEnd);
 
 		data.done = true;
 
@@ -966,6 +1014,44 @@ turnMethods = {
 
 	},
 
+	// Removes listeners and plugin state (safe to call more than once)
+
+	destroy: function() {
+
+		var data = this.data(), page, $root = $(this), ns = data.eventNs;
+
+		if (!data || !data.opts) return this;
+
+		this.turn('stop');
+
+		for (page in data.pages)
+			if (has(page, data.pages) && data.pages[page]) {
+				var fd = data.pages[page].data().f;
+				if (fd) {
+					if (fd.fwrapper) fd.fwrapper.remove();
+					if (fd.wrapper) fd.wrapper.remove();
+				}
+				data.pages[page].off();
+			}
+
+		if (data.fparent && data.fparent.data && !data.fparent.data().flips)
+			data.fparent.remove();
+
+		for (page in data.pageObjs)
+			if (has(page, data.pageObjs) && data.pageObjs[page])
+				data.pageObjs[page].off();
+
+		if (ns) {
+			$root.off(events.start + ns);
+			$(document).off(events.move + ns).off(events.end + ns);
+			removePassiveTouchListeners($root);
+		}
+
+		this.removeData();
+		return this;
+
+	},
+
 	// Adds a motion to the internal list
 
 	_addMotionPage: function() {
@@ -1240,22 +1326,22 @@ flipMethods = {
 
 	_cAllowed: function() {
 
-		return corners[this.data().f.opts.corners] || this.data().f.opts.corners;
+		var key = this.data().f.opts.corners,
+			turn = this.data().f.opts.turn,
+			sets = turn && turn.data().corners;
+		return (sets && sets[key]) || cornerSets[key] || key;
 
 	},
 
 	_cornerActivated: function(e) {
-		if (e.originalEvent === undefined) {
-			return false;
-		}		
-
-		e = (isTouch) ? e.originalEvent.touches : [e];
+		var pt = getPointerFromEvent(e);
+		if (!pt) return false;
 
 		var data = this.data().f,
 			pos = data.parent.offset(),
 			width = this.width(),
 			height = this.height(),
-			c = {x: Math.max(0, e[0].pageX-pos.left), y: Math.max(0, e[0].pageY-pos.top)},
+			c = {x: Math.max(0, pt.pageX-pos.left), y: Math.max(0, pt.pageY-pos.top)},
 			csz = data.opts.cornerSize,
 			allowedCorners = flipMethods._cAllowed.call(this);
 
@@ -1347,11 +1433,13 @@ flipMethods = {
 		}
 
 		if (data.parent.is(':visible')) {
-			data.fwrapper.css({top: data.parent.offset().top,
-				left: data.parent.offset().left});
+			var parentOff = data.parent.offset();
+			data.fwrapper.css({top: parentOff.top, left: parentOff.left});
 
-			if (data.opts.turn)
-				data.fparent.css({top: -data.opts.turn.offset().top, left: -data.opts.turn.offset().left});
+			if (data.opts.turn) {
+				var turnOff = data.opts.turn.offset();
+				data.fparent.css({top: -turnOff.top, left: -turnOff.left});
+			}
 		}
 
 		this.flip('z', data.opts['z-index']);
@@ -1796,20 +1884,21 @@ flipMethods = {
 		var data = this.data().f;
 
 		if (!data.disabled) {
-			e = (isTouch) ? e.originalEvent.touches : [e];
-		
+			var pt = getPointerFromEvent(e);
+			if (!pt) return;
+
 			if (data.corner) {
 
 				var pos = data.parent.offset();
 
-				data.corner.x = e[0].pageX-pos.left;
-				data.corner.y = e[0].pageY-pos.top;
+				data.corner.x = pt.pageX-pos.left;
+				data.corner.y = pt.pageY-pos.top;
 
 				flipMethods._showFoldedPage.call(this, data.corner);
 			
 			} else if (!this.data().effect && this.is(':visible')) { // roll over
 				
-				var corner = flipMethods._cornerActivated.call(this, e[0]);
+				var corner = flipMethods._cornerActivated.call(this, e);
 				if (corner) {
 					var origin = flipMethods._c.call(this, corner.corner, data.opts.cornerSize/2);
 					corner.x = origin.x;
@@ -1883,44 +1972,46 @@ $.extend($.fn, {
 		var data = this.data();
 
 		if (data.effect)
-			clearInterval(data.effect.handle);
+			cancelAnimationFrame(data.effect.handle);
 
 		if (point) {
 
 			if (!point.to.length) point.to = [point.to];
 			if (!point.from.length) point.from = [point.from];
-			if (!point.easing) point.easing = function (x, t, b, c, data) { return c * Math.sqrt(1 - (t=t/data-1)*t) + b; };
+			if (!point.easing) point.easing = function (x, t, b, c, d) { return c * Math.sqrt(1 - (t=t/d-1)*t) + b; };
 
 			var j, diff = [],
 				len = point.to.length,
 				that = this,
-				fps = point.fps || 30,
-				time = - fps,
-				f = function() {
-					var j, v = [];
-					time = Math.min(point.duration, time + fps);
-	
+				startTs = null,
+				duration = point.duration,
+				f = function(ts) {
+					var j, v = [], elapsed;
+
+					if (!startTs) startTs = ts;
+					elapsed = Math.min(ts - startTs, duration);
+
 					for (j = 0; j < len; j++)
-						v.push(point.easing(1, time, point.from[j], diff[j], point.duration));
+						v.push(point.easing(1, elapsed, point.from[j], diff[j], duration));
 
-					point.frame((len==1) ? v[0] : v);
+					point.frame((len === 1) ? v[0] : v);
 
-					if (time==point.duration) {
-						clearInterval(data.effect.handle);
+					if (elapsed < duration) {
+						data.effect.handle = requestAnimationFrame(f);
+					} else {
 						delete data['effect'];
 						that.data(data);
 						if (point.complete)
 							point.complete();
-						}
-					};
+					}
+				};
 
 			for (j = 0; j < len; j++)
 				diff.push(point.to[j] - point.from[j]);
 
 			data.effect = point;
-			data.effect.handle = setInterval(f, fps);
+			data.effect.handle = requestAnimationFrame(f);
 			this.data(data);
-			f();
 		} else {
 			delete data['effect'];
 		}

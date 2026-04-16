@@ -245,42 +245,32 @@ var has3d,
 	// Adds gradients
 
 	gradient = function(obj, p0, p1, colors, numColors) {
-	
-		var j, cols = [];
 
-		if (vendor=='-webkit-') {
-		
-			for (j = 0; j<numColors; j++)
-					cols.push('color-stop('+colors[j][0]+', '+colors[j][1]+')');
-			
-			obj.css({'background-image': '-webkit-gradient(linear, '+p0.x+'% '+p0.y+'%,  '+p1.x+'% '+p1.y+'%, '+ cols.join(',') +' )'});
+		var j,
+			cols = [],
+			w = obj.width(),
+			h = obj.height(),
+			p0x = p0.x / 100 * w,
+			p0y = p0.y / 100 * h,
+			p1x = p1.x / 100 * w,
+			p1y = p1.y / 100 * h,
+			dx = p1x - p0x,
+			dy = p1y - p0y,
+			angle = Math.atan2(dy, dx),
+			angle2 = angle - Math.PI / 2,
+			diagonal = Math.abs(w * Math.sin(angle2)) + Math.abs(h * Math.cos(angle2)),
+			gradientDiagonal = Math.sqrt(dx * dx + dy * dy),
+			corner = point2D((p1x < p0x) ? w : 0, (p1y < p0y) ? h : 0),
+			slope = Math.tan(angle),
+			inverse = -1 / slope,
+			x = (inverse * corner.x - corner.y - slope * p0x + p0y) / (inverse - slope),
+			c = {x: x, y: inverse * x - inverse * corner.x + corner.y},
+			segA = Math.sqrt(Math.pow(c.x - p0x, 2) + Math.pow(c.y - p0y, 2));
 
-		} else {
+		for (j = 0; j < numColors; j++)
+			cols.push(colors[j][1] + ' ' + ((segA + gradientDiagonal * colors[j][0]) * 100 / diagonal) + '%');
 
-			// This procedure makes the gradients for non-webkit browsers
-			// It will be reduced to one unique way for gradients in next versions
-			
-			p0 = {x:p0.x/100 * obj.width(), y:p0.y/100 * obj.height()};
-			p1 = {x:p1.x/100 * obj.width(), y:p1.y/100 * obj.height()};
-
-			var dx = p1.x-p0.x,
-				dy = p1.y-p0.y,
-				angle = Math.atan2(dy, dx),
-				angle2 = angle - Math.PI/2,
-				diagonal = Math.abs(obj.width()*Math.sin(angle2)) + Math.abs(obj.height()*Math.cos(angle2)),
-				gradientDiagonal = Math.sqrt(dy*dy + dx*dx),
-				corner = point2D((p1.x<p0.x) ? obj.width() : 0, (p1.y<p0.y) ? obj.height() : 0),
-				slope = Math.tan(angle),
-				inverse = -1/slope,
-				x = (inverse*corner.x - corner.y - slope*p0.x + p0.y) / (inverse-slope),
-				c = {x: x, y: inverse*x - inverse*corner.x + corner.y},
-				segA = (Math.sqrt( Math.pow(c.x-p0.x,2) + Math.pow(c.y-p0.y,2)));
-
-				for (j = 0; j<numColors; j++)
-					cols.push(' '+colors[j][1]+' '+(( segA + gradientDiagonal*colors[j][0] )*100/diagonal)+'%');
-		
-				obj.css({'background-image': vendor+'linear-gradient(' + (-angle) + 'rad,' + cols.join(',') + ')'});
-		}
+		obj.css({'background-image': 'linear-gradient(' + (-angle) + 'rad,' + cols.join(',') + ')'});
 	},
 
 turnMethods = {
@@ -312,7 +302,7 @@ turnMethods = {
 		if (opts.when)
 			for (i in opts.when)
 				if (has(i, opts.when))
-					this.bind(i, opts.when[i]);
+					this.on(i, opts.when[i]);
 
 
 		this.css({position: 'relative', width: opts.width, height: opts.height});
@@ -1034,13 +1024,22 @@ turnMethods = {
 
 		this.turn('stop');
 
+		for (page in data.pages)
+			if (has(page, data.pages) && data.pages[page]) {
+				var fd = data.pages[page].data().f;
+				if (fd) {
+					if (fd.fwrapper) fd.fwrapper.remove();
+					if (fd.wrapper) fd.wrapper.remove();
+				}
+				data.pages[page].off();
+			}
+
+		if (data.fparent && data.fparent.data && !data.fparent.data().flips)
+			data.fparent.remove();
+
 		for (page in data.pageObjs)
 			if (has(page, data.pageObjs) && data.pageObjs[page])
 				data.pageObjs[page].off();
-
-		for (page in data.pages)
-			if (has(page, data.pages) && data.pages[page])
-				data.pages[page].off();
 
 		if (ns) {
 			$root.off(events.start + ns);
@@ -1434,11 +1433,13 @@ flipMethods = {
 		}
 
 		if (data.parent.is(':visible')) {
-			data.fwrapper.css({top: data.parent.offset().top,
-				left: data.parent.offset().left});
+			var parentOff = data.parent.offset();
+			data.fwrapper.css({top: parentOff.top, left: parentOff.left});
 
-			if (data.opts.turn)
-				data.fparent.css({top: -data.opts.turn.offset().top, left: -data.opts.turn.offset().left});
+			if (data.opts.turn) {
+				var turnOff = data.opts.turn.offset();
+				data.fparent.css({top: -turnOff.top, left: -turnOff.left});
+			}
 		}
 
 		this.flip('z', data.opts['z-index']);
@@ -1971,44 +1972,46 @@ $.extend($.fn, {
 		var data = this.data();
 
 		if (data.effect)
-			clearInterval(data.effect.handle);
+			cancelAnimationFrame(data.effect.handle);
 
 		if (point) {
 
 			if (!point.to.length) point.to = [point.to];
 			if (!point.from.length) point.from = [point.from];
-			if (!point.easing) point.easing = function (x, t, b, c, data) { return c * Math.sqrt(1 - (t=t/data-1)*t) + b; };
+			if (!point.easing) point.easing = function (x, t, b, c, d) { return c * Math.sqrt(1 - (t=t/d-1)*t) + b; };
 
 			var j, diff = [],
 				len = point.to.length,
 				that = this,
-				fps = point.fps || 30,
-				time = - fps,
-				f = function() {
-					var j, v = [];
-					time = Math.min(point.duration, time + fps);
-	
+				startTs = null,
+				duration = point.duration,
+				f = function(ts) {
+					var j, v = [], elapsed;
+
+					if (!startTs) startTs = ts;
+					elapsed = Math.min(ts - startTs, duration);
+
 					for (j = 0; j < len; j++)
-						v.push(point.easing(1, time, point.from[j], diff[j], point.duration));
+						v.push(point.easing(1, elapsed, point.from[j], diff[j], duration));
 
-					point.frame((len==1) ? v[0] : v);
+					point.frame((len === 1) ? v[0] : v);
 
-					if (time==point.duration) {
-						clearInterval(data.effect.handle);
+					if (elapsed < duration) {
+						data.effect.handle = requestAnimationFrame(f);
+					} else {
 						delete data['effect'];
 						that.data(data);
 						if (point.complete)
 							point.complete();
-						}
-					};
+					}
+				};
 
 			for (j = 0; j < len; j++)
 				diff.push(point.to[j] - point.from[j]);
 
 			data.effect = point;
-			data.effect.handle = setInterval(f, fps);
+			data.effect.handle = requestAnimationFrame(f);
 			this.data(data);
-			f();
 		} else {
 			delete data['effect'];
 		}

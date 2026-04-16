@@ -122,6 +122,8 @@ $('#book').turn({
 
 ## Demos
 
+Open **[`demo.html`](demo.html)** for a single-page interactive showcase that covers all three modes below.
+
 | Demo | Description |
 |------|-------------|
 | [`demos/magazine/`](demos/magazine/index.html) | Double-page magazine spread |
